@@ -9,7 +9,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 int _NR_openat = 0;
-
+unsigned long init_ns = 0;
 typedef struct file_name {
     char filename[MAX_PATH_NAME_SIZE];
 } filename_t;
@@ -162,17 +162,25 @@ int handle_open(struct bpf_raw_tracepoint_args *ctx)
 	pid_t pid;
 	filename_t pathname = {0};
 	filename_t *pathdebug;
+	struct task_struct *task;
 	char comm[16];
 	int result;
 	char debugstr[128];
 	unsigned long syscall_id = ctx->args[1];
-
+	unsigned long pid_ns;
+	
 	bpf_get_current_comm(comm, sizeof(comm));
  	result = __commcmp(comm,"bootstrap");
+	task = (struct task_struct *)bpf_get_current_task();
+	/*筛选主机端*/
+	pid_ns = BPF_CORE_READ(task,nsproxy,pid_ns_for_children,ns.inum);
+	if(pid_ns != init_ns)
+	{
+		return 0;
+	}
 	//筛选openat
 	if(syscall_id != _NR_openat || result == 0)
 		return 0;
-	
 	struct pt_regs *regs;
 	regs = (struct pt_regs *) ctx->args[0];
 
@@ -211,16 +219,23 @@ int handle_open_exit(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 	}
 	
+	/**/
+	pid = bpf_get_current_pid_tgid() >> 32;
+	name = (filename_t *)bpf_map_lookup_elem(&open_map, &pid);
+	if(name == NULL)	
+	{
+		return 0;
+	}
+
 	/* reserve sample from BPF ringbuf */
 	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
-
+	
 	/* fill out the sample with data */
 	task = (struct task_struct *)bpf_get_current_task();
 	//bpf_printk("PID %d result %d", syscall_id,result);
-	pid = bpf_get_current_pid_tgid() >> 32;
-	name = (filename_t *)bpf_map_lookup_elem(&open_map, &pid);
+
 	bpf_probe_read_str(e->filename, sizeof(e->filename), (void *)(name->filename)); 
 	//bpf_core_read_user_str(e->filename, sizeof(e->filename), (void *)(name->filename));
 

@@ -15,8 +15,8 @@
 #include "bootstrap.skel.h"
 #include "hash1.1.h"
 #include "main.h"
-
-
+#define MAX_PROC_PIDNS 64
+#define MAX_STRLEN 1024
 static struct env {
 	bool verbose;
 	long min_duration_ms;
@@ -81,7 +81,7 @@ static void sig_handler(int sig)
 {
 	exiting = true;
 }
-int isaDir(char *buff)
+static int isaDir(char *buff)
 {
     struct stat st;
     stat(buff,&st);
@@ -94,12 +94,12 @@ int isaDir(char *buff)
         return 0;
     }
 }
-int getAbspath(char *rootpath,char *path,char *pid)
+static int getAbspath(char *rootpath,char *path,char *pid)
 {
     int pathlen;
-    char cwd[1024];
-    char linkpath[1024];
-    char Relativepath[1024]={0};
+    char cwd[MAX_STRLEN];
+    char linkpath[MAX_STRLEN];
+    char Relativepath[MAX_STRLEN]={0};
     if (path[0] == '/')
     {
         //printf("%s\n", path);
@@ -114,7 +114,7 @@ int getAbspath(char *rootpath,char *path,char *pid)
             Relativepath[i] = path[i+1];
         }
         sprintf(cwd, "/proc/%s/cwd", pid);
-        readlink(cwd, linkpath, 1024 - 1);
+        readlink(cwd, linkpath, MAX_STRLEN - 1);
         sprintf(rootpath, "%s%s", linkpath,Relativepath);
 		//printf("rootpath:%s\nrelvpath:%s\n",linkpath,Relativepath);
         return isaDir(rootpath);
@@ -123,7 +123,7 @@ int getAbspath(char *rootpath,char *path,char *pid)
     else
     {
         sprintf(cwd, "/proc/%s/cwd", pid);
-        readlink(cwd, linkpath, 1024 - 1);
+        readlink(cwd, linkpath, MAX_STRLEN - 1);
         sprintf(rootpath, "%s/%s", linkpath,path);
         //printf("rootpath:%s\nrelvpath:%s\n",linkpath,path);
         return isaDir(rootpath);
@@ -164,7 +164,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			sprintf(strpid,"%d",e->pid);
 			//detect(e->filename,strpid);
 			int ret = getAbspath(rootpath,e->filename,strpid);
-			if(strncmp("/tmp",rootpath,4))
+			if(strncmp("/home/wyx",rootpath,9))
 				return 0;
 			
 			switch (ret)
@@ -185,6 +185,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	return 0;
 }
 
+void read_pidns(unsigned long *host_pidns)
+{
+	char buf[MAX_PROC_PIDNS]  = {0};  
+	char *buf_p				  = buf ; // 作为strsep的第一个参数
+	char *strtoul_end_ptr     = NULL;
+	// char *strsep_ret 		  = NULL;
+
+	int result = readlink("/proc/self/ns/pid",buf,MAX_PROC_PIDNS-1);
+	// strsep_ret = strsep(&buf_p, "[" );
+	strsep(&buf_p, "[" );
+	// fprintf(stderr, "strsep_ret : %s \n" ,strsep_ret);
+	// fprintf(stderr, "buf_p : %s \n" ,buf_p);
+	// host_pidns = strtoul(&buf[5], &strtoul_end_ptr, 10);
+	*host_pidns = strtoul(buf_p, &strtoul_end_ptr, 10);
+	//printf("hostns:%ld\n",*host_pidns);
+	return ;
+}
 
 int main(int argc, char **argv)
 {
@@ -215,6 +232,7 @@ int main(int argc, char **argv)
 	/* Parameterize BPF code with minimum duration parameter */
 	skel->rodata->min_duration_ns = env.min_duration_ms * 1000000ULL;
 	skel->bss->_NR_openat = __NR_openat;
+	read_pidns(&(skel->bss->init_ns)); 
 	/* Load & verify BPF programs */
 	err = bootstrap_bpf__load(skel);
 	if (err) {
